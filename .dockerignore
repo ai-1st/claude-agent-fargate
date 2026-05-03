@@ -1,0 +1,6 @@
+**
+!src/worker/package.json
+!src/worker/package-lock.json
+!src/worker/index.ts
+!src/worker/Dockerfile
+!src/shared/**

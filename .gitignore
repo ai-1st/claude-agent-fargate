@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.aws-sam/
+*.js
+*.d.ts
+*.js.map
+!src/worker/Dockerfile
+.env
+.env.*
+projects/**/.env
+*.tgz

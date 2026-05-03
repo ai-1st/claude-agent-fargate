@@ -1,0 +1,20 @@
+{
+  "name": "claude-agent-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node dist/worker/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3",
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/client-ssm": "^3",
+    "@aws-sdk/lib-dynamodb": "^3",
+    "@anthropic-ai/claude-agent-sdk": "^0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}
