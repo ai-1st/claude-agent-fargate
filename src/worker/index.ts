@@ -13,11 +13,17 @@ import { execSync } from "node:child_process";
 import { writeFileSync, mkdirSync, readFileSync, statSync, existsSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, relative, dirname } from "node:path";
+import { homedir } from "node:os";
 
 const TABLE = process.env.TABLE_NAME!;
 const BUCKET = process.env.BUCKET_NAME!;
 const SESSION_ID = process.env.SESSION_ID!;
 const MESSAGE_SK = process.env.MESSAGE_SK!;
+const PROJECT_DIR = "/tmp/project";
+const SDK_PROJECTS_DIR = join(homedir(), ".claude", "projects");
+// SDK sanitizes cwd: non-alphanum -> '-' (matches sdk.mjs F1())
+const SDK_SESSION_DIR = join(SDK_PROJECTS_DIR, PROJECT_DIR.replace(/[^a-zA-Z0-9]/g, "-"));
+const AGENT_STATE_KEY = `agent-state/${SESSION_ID}.tgz`;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -26,7 +32,8 @@ const ssm = new SSMClient({});
 interface Session {
   pk: string;
   sk: string;
-  persona: string;
+  persona?: string;
+  project?: string;
   status: string;
   agentSessionId?: string;
 }
@@ -75,7 +82,9 @@ async function main() {
     log("db", "Fetching session...");
     const session = await getItem<Session>(`SESSION#${SESSION_ID}`, "META");
     if (!session) throw new Error("Session not found");
-    log("db", `Session persona=${session.persona} status=${session.status} agentSessionId=${session.agentSessionId ?? "(new)"}`);
+    const personaName = session.persona ?? session.project;
+    if (!personaName) throw new Error("Session has no persona/project");
+    log("db", `Session persona=${personaName} status=${session.status} agentSessionId=${session.agentSessionId ?? "(new)"}`);
 
     log("db", "Fetching message...");
     const message = await getItem<Message>(`SESSION#${SESSION_ID}`, `MSG#${MESSAGE_SK}`);
@@ -83,25 +92,29 @@ async function main() {
     log("db", `Message kind=${message.kind ?? "user"} prompt="${message.prompt.slice(0, 80)}..."`);
 
     log("db", "Fetching persona...");
-    const persona = await getItem<Persona>(`PERSONA#${session.persona}`, "META");
-    if (!persona) throw new Error(`Persona ${session.persona} not found`);
+    let persona = await getItem<Persona>(`PERSONA#${personaName}`, "META");
+    if (!persona) {
+      log("db", `PERSONA#${personaName} not found, falling back to legacy PROJECT#${personaName}`);
+      persona = await getItem<Persona>(`PROJECT#${personaName}`, "PROJECT");
+    }
+    if (!persona) throw new Error(`Persona ${personaName} not found`);
     log("db", `Persona s3Key=${persona.s3Key} memoryEnabled=${persona.memoryEnabled !== false}`);
 
-    const projectDir = "/tmp/project";
+    const projectDir = PROJECT_DIR;
     mkdirSync(projectDir, { recursive: true });
 
     log("s3", `Downloading ${persona.s3Key}...`);
     await downloadAndExtract(persona.s3Key, projectDir);
     log("s3", "Project extracted");
 
-    log("ssm", `Fetching secrets for ${persona.name}...`);
-    await writeSecrets(persona.name, projectDir);
+    log("ssm", `Fetching secrets for ${personaName}...`);
+    await writeSecrets(personaName, projectDir);
 
     const memoryDir = join(projectDir, "memory");
     let memoryManifest = new Map<string, string>();
     if (persona.memoryEnabled !== false) {
       log("memory", "Hydrating memory from S3...");
-      memoryManifest = await hydrateMemory(persona.name, memoryDir);
+      memoryManifest = await hydrateMemory(personaName, memoryDir);
       log("memory", `Hydrated ${memoryManifest.size} files`);
     }
 
@@ -111,7 +124,16 @@ async function main() {
     const allowedTools = persona.allowedTools && persona.allowedTools.length > 0 ? persona.allowedTools : DEFAULT_TOOLS;
     log("agent", `allowedTools=${allowedTools.join(",")}`);
 
-    const isFollowUp = !!session.agentSessionId;
+    let isFollowUp = !!session.agentSessionId;
+    if (isFollowUp) {
+      log("agent-state", `Restoring SDK session state from s3://${BUCKET}/${AGENT_STATE_KEY}...`);
+      const restored = await restoreAgentState();
+      if (!restored) {
+        log("agent-state", "No prior state — falling back to fresh session (continuity for this turn lost).");
+        isFollowUp = false;
+      }
+    }
+
     const baseOptions: Record<string, unknown> = {
       cwd: projectDir,
       allowedTools,
@@ -148,8 +170,8 @@ async function main() {
     }
     log("agent", `Query complete, ${msgCount} messages total`);
 
-    if (!isFollowUp && capturedAgentSessionId) {
-      log("db", "Saving agentSessionId on session META...");
+    if (capturedAgentSessionId && capturedAgentSessionId !== session.agentSessionId) {
+      log("db", `Saving agentSessionId=${capturedAgentSessionId} on session META...`);
       await ddb.send(
         new UpdateCommand({
           TableName: TABLE,
@@ -162,9 +184,12 @@ async function main() {
 
     if (persona.memoryEnabled !== false) {
       log("memory", "Syncing memory back to S3...");
-      const synced = await syncMemoryBack(persona.name, memoryDir, memoryManifest);
+      const synced = await syncMemoryBack(personaName, memoryDir, memoryManifest);
       log("memory", `Synced ${synced.uploaded} uploaded, ${synced.deleted} deleted`);
     }
+
+    log("agent-state", `Saving SDK session state to s3://${BUCKET}/${AGENT_STATE_KEY}...`);
+    await saveAgentState();
 
     log("db", "Updating message status to COMPLETED...");
     await updateMessageStatus("COMPLETED", result);
@@ -232,6 +257,49 @@ async function writeSecrets(personaName: string, dir: string): Promise<void> {
     .join("\n");
   writeFileSync(`${dir}/.env`, envContent + "\n");
   console.log(`Wrote ${params.length} secrets to .env`);
+}
+
+// --- SDK agent state persistence (~/.claude/projects/<sanitized-cwd>/) ---
+
+async function restoreAgentState(): Promise<boolean> {
+  try {
+    const got = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: AGENT_STATE_KEY }));
+    const chunks: Buffer[] = [];
+    const body = got.Body as AsyncIterable<Uint8Array>;
+    for await (const chunk of body) chunks.push(Buffer.from(chunk));
+    const tgzPath = "/tmp/agent-state.tgz";
+    writeFileSync(tgzPath, Buffer.concat(chunks));
+    mkdirSync(SDK_SESSION_DIR, { recursive: true });
+    execSync(`tar xzf ${tgzPath} -C ${SDK_SESSION_DIR}`, { stdio: "inherit" });
+    console.log(`[agent-state] Restored ${chunks.length} chunks → ${SDK_SESSION_DIR}`);
+    return true;
+  } catch (e: unknown) {
+    const name = e instanceof Error ? e.name : String(e);
+    if (name === "NoSuchKey" || name === "NotFound") {
+      console.log("[agent-state] No prior state in S3");
+      return false;
+    }
+    throw e;
+  }
+}
+
+async function saveAgentState(): Promise<void> {
+  if (!existsSync(SDK_SESSION_DIR)) {
+    console.log(`[agent-state] ${SDK_SESSION_DIR} does not exist, nothing to save`);
+    return;
+  }
+  const tgzPath = "/tmp/agent-state.tgz";
+  execSync(`tar czf ${tgzPath} -C ${SDK_SESSION_DIR} .`, { stdio: "inherit" });
+  const buf = readFileSync(tgzPath);
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: AGENT_STATE_KEY,
+      Body: buf,
+      ContentType: "application/gzip",
+    })
+  );
+  console.log(`[agent-state] Saved ${buf.length} bytes`);
 }
 
 function readMcpConfig(dir: string): Record<string, unknown> | undefined {

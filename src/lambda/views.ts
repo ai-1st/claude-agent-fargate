@@ -63,11 +63,13 @@ export function renderSessionTable(sessions: Session[]): string {
   const rows = sessions
     .map((s) => {
       const id = sessionId(s.pk);
+      const personaName = s.persona ?? (s as unknown as { project?: string }).project ?? "(unknown)";
+      const created = (s.createdAt ?? "").replace("T", " ").slice(0, 19);
       return `<tr class="border-t border-gray-200">
         <td class="px-3 py-2"><a href="/sessions/${esc(id)}" class="text-blue-600 hover:underline">${esc(id.slice(0, 8))}</a></td>
-        <td class="px-3 py-2">${esc(s.persona ?? "")}</td>
+        <td class="px-3 py-2">${esc(personaName)}</td>
         <td class="px-3 py-2">${statusBadge(s.status)}</td>
-        <td class="px-3 py-2 text-sm text-gray-600">${esc(s.createdAt.replace("T", " ").slice(0, 19))}</td>
+        <td class="px-3 py-2 text-sm text-gray-600">${esc(created)}</td>
       </tr>`;
     })
     .join("");
@@ -87,13 +89,15 @@ export function renderSessionDetail(
   liveLogs: Map<string, string> = new Map()
 ): string {
   const id = sessionId(session.pk);
+  const personaName = session.persona ?? (session as unknown as { project?: string }).project ?? "(unknown)";
+  const created = (session.createdAt ?? "").replace("T", " ").slice(0, 19);
   const hasRunning = messages.some((m) => m.status === "RUNNING");
   const pollAttr = hasRunning ? ` hx-get="/sessions/${esc(id)}/messages" hx-trigger="every 3s" hx-target="#messages"` : "";
   const disableFollow = hasRunning ? " disabled" : "";
   const disableCls = hasRunning ? " opacity-50 cursor-not-allowed" : "";
   return renderPage(`Session ${id.slice(0, 8)}`, `
     <h2 class="text-2xl font-semibold mb-2">Session ${esc(id.slice(0, 8))} ${statusBadge(session.status)}</h2>
-    <p class="mb-4 text-sm text-gray-600">Persona: <a href="/personas/${esc(session.persona)}" class="text-blue-600 hover:underline font-semibold">${esc(session.persona)}</a> · Created: ${esc(session.createdAt.replace("T", " ").slice(0, 19))}${session.agentSessionId ? ` · agent=${esc(session.agentSessionId.slice(0, 8))}` : ""}</p>
+    <p class="mb-4 text-sm text-gray-600">Persona: <a href="/personas/${esc(personaName)}" class="text-blue-600 hover:underline font-semibold">${esc(personaName)}</a> · Created: ${esc(created)} ${session.agentSessionId ? ` · agent=${esc(session.agentSessionId.slice(0, 8))}` : ""}</p>
     <div id="messages"${pollAttr} class="space-y-4">
       ${renderMessageList(messages, id, liveLogs)}
     </div>
@@ -116,8 +120,9 @@ export function renderMessageList(
   if (!messages.length) return `<p class="text-gray-500">No messages.</p>`;
   return messages
     .map((m) => {
-      const sortKey = m.sk.replace("MSG#", "");
+      const sortKey = (m.sk ?? "").replace("MSG#", "");
       const isRunning = m.status === "RUNNING";
+      const created = (m.createdAt ?? "").replace("T", " ").slice(0, 19);
       const log = liveLogs.get(m.sk);
       const logsUrl = `/sessions/${esc(sessionIdStr)}/messages/${esc(sortKey)}/logs`;
       const liveLogBlock = isRunning && m.taskArn
@@ -137,14 +142,16 @@ export function renderMessageList(
       const kindBadge = m.kind === "heartbeat"
         ? `<span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-purple-100 text-purple-800 mr-2">heartbeat</span>`
         : "";
-      return `<div class="border border-gray-200 rounded-lg p-4 bg-white">
+      const blockId = `msg-${esc(sessionIdStr)}-${sortKey}`;
+      const preserveAttr = !isRunning ? ` hx-preserve="true"` : "";
+      return `<div id="${blockId}"${preserveAttr} class="border border-gray-200 rounded-lg p-4 bg-white">
         <div class="font-semibold mb-2 whitespace-pre-wrap">${kindBadge}#${sortKey}: ${esc(m.prompt)}</div>
         ${isRunning ? `<p class="mb-2 flex items-center gap-2">${statusBadge("RUNNING")} <span class="inline-block w-4 h-4 border-2 border-gray-300 border-t-gray-700 rounded-full animate-spin"></span> Processing...</p>` : ""}
         ${m.result ? `<div class="whitespace-pre-wrap font-mono text-sm text-gray-800">${esc(m.result)}</div>` : ""}
         ${m.error ? `<div class="whitespace-pre-wrap text-red-700">Error: ${esc(m.error)}</div>` : ""}
         ${liveLogBlock}
         ${completedLogBlock}
-        <small class="block mt-2 text-gray-500">${statusBadge(m.status)} · ${esc(m.createdAt.replace("T", " ").slice(0, 19))}</small>
+        <small class="block mt-2 text-gray-500">${statusBadge(m.status)} · ${esc(created)}</small>
       </div>`;
     })
     .join("");
@@ -298,8 +305,9 @@ function statusBadge(status: string): string {
   return `<span class="inline-block px-2 py-0.5 rounded text-xs font-semibold ${cls}">${status}</span>`;
 }
 
-function esc(s: string): string {
-  return s
+function esc(s: string | undefined | null): string {
+  if (s === undefined || s === null) return "";
+  return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
