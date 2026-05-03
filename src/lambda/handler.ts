@@ -67,9 +67,10 @@ export async function handler(
   const method = event.requestContext.http.method;
   const path = event.rawPath;
 
-  // Scheduler invokes us with payload directly (no APIGW shape) — but Function URL
-  // delivers it as a normal POST. Heartbeat path is `/heartbeat`; auth via shared secret header.
-  const isSchedulerCall = method === "POST" && path === "/heartbeat";
+  const isSchedulerCall =
+    method === "POST" &&
+    path === "/heartbeat" &&
+    (event.headers?.["x-heartbeat-secret"] === APP_PASSWORD);
 
   if (!isSchedulerCall && !(method === "POST" && path === "/login") && !(method === "GET" && path === "/login")) {
     if (!isAuthenticated(event)) return redirect("/login");
@@ -209,6 +210,9 @@ export async function handler(
       let prompt: string;
       if (customPrompt) {
         prompt = customPrompt;
+      } else if (scheduleId) {
+        const sched = await getSchedule(personaName, scheduleId);
+        prompt = sched?.prompt ?? `Scheduled task ${scheduleId} at ${new Date().toISOString()}.`;
       } else {
         prompt = `Heartbeat at ${new Date().toISOString()}. Review your memory/ for any pending TODOs, scheduled work, or proactive actions you should take. If nothing to do, respond briefly.`;
       }
@@ -350,19 +354,25 @@ function schedName(persona: string, suffix: string): string {
   return `${STACK_NAME ?? "claude-agent"}-${safe}-${suffix}`;
 }
 
+function buildSchedulerEventInput(bodyJson: string): string {
+  return JSON.stringify({
+    requestContext: { http: { method: "POST" } },
+    rawPath: "/heartbeat",
+    headers: {
+      "content-type": "application/json",
+      "x-heartbeat-secret": APP_PASSWORD ?? "",
+    },
+    body: bodyJson,
+  });
+}
+
 async function ensureHeartbeatSchedule(persona: string, cron: string): Promise<void> {
   const name = schedName(persona, "heartbeat");
   const expr = toScheduleExpression(cron);
-  const input = JSON.stringify({ persona });
   const target = {
     Arn: FUNCTION_ARN!,
     RoleArn: SCHEDULER_ROLE_ARN!,
-    Input: JSON.stringify({
-      requestContext: { http: { method: "POST" } },
-      rawPath: "/heartbeat",
-      headers: { "content-type": "application/json" },
-      body: input,
-    }),
+    Input: buildSchedulerEventInput(JSON.stringify({ persona })),
   };
   try {
     await scheduler.send(
@@ -398,16 +408,10 @@ async function deleteHeartbeatSchedule(persona: string): Promise<void> {
 async function createCronSchedule(persona: string, id: string, cron: string): Promise<string> {
   const name = schedName(persona, `cron-${id}`);
   const expr = toScheduleExpression(cron);
-  const input = JSON.stringify({ persona, scheduleId: id });
   const target = {
     Arn: FUNCTION_ARN!,
     RoleArn: SCHEDULER_ROLE_ARN!,
-    Input: JSON.stringify({
-      requestContext: { http: { method: "POST" } },
-      rawPath: "/heartbeat",
-      headers: { "content-type": "application/json" },
-      body: input,
-    }),
+    Input: buildSchedulerEventInput(JSON.stringify({ persona, scheduleId: id })),
   };
   await scheduler.send(
     new CreateScheduleCommand({

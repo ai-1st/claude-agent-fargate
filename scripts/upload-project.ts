@@ -1,12 +1,18 @@
 #!/usr/bin/env npx tsx
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { readFileSync, existsSync } from "node:fs";
 
 const { values } = parseArgs({
   options: {
     name: { type: "string" },
     dir: { type: "string" },
+    "system-prompt": { type: "string" },
+    "system-prompt-file": { type: "string" },
+    tools: { type: "string" },
+    "heartbeat-cron": { type: "string" },
+    "memory-enabled": { type: "string", default: "true" },
+    "mcp-enabled": { type: "string", default: "false" },
     profile: { type: "string", default: "co" },
     stack: { type: "string", default: "claude-agent-fargate" },
     region: { type: "string", default: "us-east-1" },
@@ -14,19 +20,22 @@ const { values } = parseArgs({
 });
 
 if (!values.name || !values.dir) {
-  console.error("Usage: npx tsx scripts/upload-project.ts --name <name> --dir <path> [--profile ce]");
+  console.error(
+    "Usage: npx tsx scripts/upload-project.ts --name <name> --dir <path>\n" +
+      "  [--system-prompt <text> | --system-prompt-file <path>]\n" +
+      "  [--tools Read,Bash,WebSearch] [--heartbeat-cron 'rate(30 minutes)']\n" +
+      "  [--memory-enabled true|false] [--mcp-enabled true|false]\n" +
+      "  [--profile ce]"
+  );
   process.exit(1);
 }
 
 const { name, dir, profile, stack, region } = values;
 
 function aws(cmd: string): string {
-  return execSync(`aws ${cmd} --profile ${profile} --region ${region}`, {
-    encoding: "utf-8",
-  }).trim();
+  return execSync(`aws ${cmd} --profile ${profile} --region ${region}`, { encoding: "utf-8" }).trim();
 }
 
-// Get stack outputs
 const outputsJson = aws(
   `cloudformation describe-stacks --stack-name ${stack} --query "Stacks[0].Outputs"`
 );
@@ -40,29 +49,50 @@ if (!bucket || !table) {
   process.exit(1);
 }
 
-// Tar the project directory
 const tgzPath = `/tmp/${name}.tgz`;
 console.log(`Archiving ${dir} → ${tgzPath}`);
 execSync(`tar czf ${tgzPath} -C ${dir} .`, { stdio: "inherit" });
 
-// Upload to S3
 const s3Key = `projects/${name}/project.tgz`;
 console.log(`Uploading to s3://${bucket}/${s3Key}`);
 aws(`s3 cp ${tgzPath} s3://${bucket}/${s3Key}`);
 
-// Register in DynamoDB
+let systemPrompt: string | undefined;
+if (values["system-prompt-file"]) {
+  if (!existsSync(values["system-prompt-file"])) {
+    console.error(`System prompt file not found: ${values["system-prompt-file"]}`);
+    process.exit(1);
+  }
+  systemPrompt = readFileSync(values["system-prompt-file"], "utf-8");
+} else if (values["system-prompt"]) {
+  systemPrompt = values["system-prompt"];
+}
+
+const tools = values.tools
+  ? values.tools.split(",").map((s) => s.trim()).filter(Boolean)
+  : undefined;
+
 const now = new Date().toISOString();
-const item = JSON.stringify({
-  pk: { S: `PROJECT#${name}` },
-  sk: { S: "PROJECT" },
+const item: Record<string, { S?: string; BOOL?: boolean; SS?: string[] }> = {
+  pk: { S: `PERSONA#${name}` },
+  sk: { S: "META" },
   name: { S: name },
   s3Key: { S: s3Key },
+  memoryEnabled: { BOOL: values["memory-enabled"] !== "false" },
+  mcpEnabled: { BOOL: values["mcp-enabled"] === "true" },
   createdAt: { S: now },
   updatedAt: { S: now },
-});
-console.log(`Registering project in DynamoDB: ${table}`);
-aws(
-  `dynamodb put-item --table-name ${table} --item '${item.replace(/'/g, "'\\''")}'`
-);
+};
+if (systemPrompt) item.systemPrompt = { S: systemPrompt };
+if (tools && tools.length) item.allowedTools = { SS: tools };
+if (values["heartbeat-cron"]) item.heartbeatCron = { S: values["heartbeat-cron"] };
 
-console.log(`Done. Project "${name}" uploaded and registered.`);
+console.log(`Registering persona in DynamoDB: ${table}`);
+const itemJson = JSON.stringify(item);
+aws(`dynamodb put-item --table-name ${table} --item '${itemJson.replace(/'/g, "'\\''")}'`);
+
+console.log(`Done. Persona "${name}" uploaded and registered.`);
+if (values["heartbeat-cron"]) {
+  console.log(`Heartbeat cron set to "${values["heartbeat-cron"]}". To wire up the EventBridge Scheduler,`);
+  console.log(`open the persona in the web UI and click Save (POST /personas).`);
+}

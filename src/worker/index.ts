@@ -267,8 +267,8 @@ async function hydrateMemory(persona: string, memoryDir: string): Promise<Map<st
       mkdirSync(dirname(localPath), { recursive: true });
       const got = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: obj.Key }));
       const chunks: Buffer[] = [];
-      // @ts-expect-error body is a Readable stream in Node
-      for await (const chunk of got.Body) chunks.push(Buffer.from(chunk));
+      const body = got.Body as AsyncIterable<Uint8Array>;
+      for await (const chunk of body) chunks.push(Buffer.from(chunk));
       const buf = Buffer.concat(chunks);
       writeFileSync(localPath, buf);
       manifest.set(relPath, sha256(buf));
