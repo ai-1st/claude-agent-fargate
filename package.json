@@ -1,5 +1,5 @@
 {
-  "name": "claude-agent-fargate",
+  "name": "claudeclaw",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -9,10 +9,8 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2",
-    "@aws-sdk/client-cloudformation": "^3",
-    "@aws-sdk/client-cloudwatch-logs": "^3.1041.0",
     "@aws-sdk/client-dynamodb": "^3",
-    "@aws-sdk/client-ecs": "^3",
+    "@aws-sdk/client-lambda": "^3",
     "@aws-sdk/client-s3": "^3",
     "@aws-sdk/client-scheduler": "^3.1041.0",
     "@aws-sdk/client-ssm": "^3",

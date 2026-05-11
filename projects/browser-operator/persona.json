@@ -1,0 +1,13 @@
+{
+  "description": "Drives a logged-in Chrome window opened by 'Open in Extension'. Handles AWS Console (SSO), Jira, and LinkedIn tabs on behalf of headless agents.",
+  "actions": [
+    "aws.copySsoCliCreds",
+    "aws.readConsolePage",
+    "jira.createIssue",
+    "jira.commentIssue",
+    "jira.readIssue",
+    "linkedin.searchPeople",
+    "linkedin.getProfile",
+    "linkedin.getFeed"
+  ]
+}

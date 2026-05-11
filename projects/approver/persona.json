@@ -1,0 +1,4 @@
+{
+  "description": "Generic human approver. Callers create sessions with an approval-shape resultSchema (e.g. {approved: boolean, comment?: string}); the agent chats with the human in the web UI and submits the verdict via submit_result.",
+  "actions": ["approve", "reject"]
+}

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Claw — OpenClaw-style personal AI agent on per-message Fargate
+Description: ClaudeClaw — serverless agent platform; per-message Lambda worker, S3 Files mount, EventBridge sleep/wake
 
 Parameters:
   AppPassword:
@@ -11,12 +11,25 @@ Parameters:
     Type: String
     Description: ECR image URI for the worker container (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/claude-agent-worker:latest)
     Default: ""
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC for worker Lambda + S3 Files mount targets
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Two subnets in different AZs with egress to Bedrock/DynamoDB/SSM/Lambda (NAT or VPC endpoints assumed already present)
+  ExtChromeId:
+    Type: String
+    Description: Chrome extension ID (stable, derived from manifest "key") used by the "Open in Extension" redirect
+    Default: ""
 
 Resources:
   # ---------- S3 ----------
   ProjectsBucket:
     Type: AWS::S3::Bucket
     Properties:
+      VersioningConfiguration:
+        # Required by S3 Files (it tracks object versions for sync).
+        Status: Enabled
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: true
@@ -38,6 +51,10 @@ Resources:
           AttributeType: S
         - AttributeName: gsi1sk
           AttributeType: S
+        - AttributeName: gsi2pk
+          AttributeType: S
+        - AttributeName: gsi2sk
+          AttributeType: S
       KeySchema:
         - AttributeName: pk
           KeyType: HASH
@@ -52,95 +69,38 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: gsi2pk
+              KeyType: HASH
+            - AttributeName: gsi2sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
-  # ---------- VPC ----------
-  VPC:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: 10.0.0.0/16
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-vpc"
-
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-
-  IGWAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
-
-  PublicSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.1.0/24
-      AvailabilityZone: !Select [0, !GetAZs ""]
-      MapPublicIpOnLaunch: true
-
-  PublicSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [1, !GetAZs ""]
-      MapPublicIpOnLaunch: true
-
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-
-  PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: IGWAttachment
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  Subnet1RTA:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet1
-      RouteTableId: !Ref PublicRouteTable
-
-  Subnet2RTA:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet2
-      RouteTableId: !Ref PublicRouteTable
-
-  TaskSecurityGroup:
+  # ---------- VPC plumbing for the worker Lambda ----------
+  WorkerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Fargate tasks egress-only
-      VpcId: !Ref VPC
+      GroupDescription: ClaudeClaw worker Lambda
+      VpcId: !Ref VpcId
       SecurityGroupEgress:
         - IpProtocol: "-1"
           CidrIp: 0.0.0.0/0
 
-  # ---------- ECR ----------
-  ECRRepo:
-    Type: AWS::ECR::Repository
+  MountTargetSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      RepositoryName: !Sub "${AWS::StackName}-worker"
-      EmptyOnDelete: true
-      ImageScanningConfiguration:
-        ScanOnPush: true
+      GroupDescription: NFS ingress for S3 Files mount targets
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref WorkerSecurityGroup
 
-  # ---------- ECS ----------
-  ECSCluster:
-    Type: AWS::ECS::Cluster
-    Properties:
-      ClusterName: !Sub "${AWS::StackName}-cluster"
-      CapacityProviders:
-        - FARGATE
-
-  TaskExecutionRole:
+  # ---------- S3 Files (managed; no self-provisioned EFS) ----------
+  S3FilesServiceRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -148,101 +108,165 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-
-  TaskRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
+              # S3 Files is implemented on top of EFS; CFN passes the role to
+              # the elasticfilesystem service principal (see iam:PassedToService
+              # in AWS-managed policy AmazonS3FilesFullAccess).
+              Service: elasticfilesystem.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: WorkerPolicy
+        - PolicyName: BucketAccess
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                Resource:
-                  - !GetAtt AgentTable.Arn
-                  - !Sub "${AgentTable.Arn}/index/*"
-              - Effect: Allow
-                Action:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
+                  - s3:GetObjectAttributes
                   - s3:ListBucket
+                  - s3:GetBucketLocation
+                  - s3:GetBucketNotification
+                  - s3:PutBucketNotification
                 Resource:
                   - !GetAtt ProjectsBucket.Arn
                   - !Sub "${ProjectsBucket.Arn}/*"
-              - Effect: Allow
-                Action:
-                  - ssm:GetParametersByPath
-                  - ssm:GetParameter
-                Resource:
-                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-agent/projects/*"
-              - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                  - bedrock:InvokeModelWithResponseStream
-                Resource: "*"
 
-  TaskDefinition:
-    Type: AWS::ECS::TaskDefinition
+  S3FileSystem:
+    Type: AWS::S3Files::FileSystem
     Properties:
-      Family: !Sub "${AWS::StackName}-worker"
-      Cpu: "2048"
-      Memory: "8192"
-      NetworkMode: awsvpc
-      RequiresCompatibilities:
-        - FARGATE
-      RuntimePlatform:
-        CpuArchitecture: ARM64
-        OperatingSystemFamily: LINUX
-      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
-      TaskRoleArn: !GetAtt TaskRole.Arn
-      ContainerDefinitions:
-        - Name: worker
-          Essential: true
-          Image: !If
-            - HasImageUri
-            - !Ref ImageUri
-            - !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepo}:latest"
-          Environment:
-            - Name: TABLE_NAME
-              Value: !Ref AgentTable
-            - Name: BUCKET_NAME
-              Value: !Ref ProjectsBucket
-            - Name: CLAUDE_CODE_USE_BEDROCK
-              Value: "1"
-            - Name: ANTHROPIC_MODEL
-              Value: us.anthropic.claude-opus-4-6-v1
-          LogConfiguration:
-            LogDriver: awslogs
-            Options:
-              mode: non-blocking
-              max-buffer-size: 25m
-              awslogs-group: !Ref WorkerLogGroup
-              awslogs-region: !Ref AWS::Region
-              awslogs-stream-prefix: worker
+      Bucket: !GetAtt ProjectsBucket.Arn
+      RoleArn: !GetAtt S3FilesServiceRole.Arn
+      ClientToken: !Sub "${AWS::StackName}-fs"
+      AcceptBucketWarning: true
 
+  S3FileSystemMountTarget1:
+    Type: AWS::S3Files::MountTarget
+    Properties:
+      FileSystemId: !Ref S3FileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref MountTargetSecurityGroup
+
+  S3FileSystemMountTarget2:
+    Type: AWS::S3Files::MountTarget
+    Properties:
+      FileSystemId: !Ref S3FileSystem
+      SubnetId: !Select [1, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref MountTargetSecurityGroup
+
+  S3FileSystemAccessPoint:
+    Type: AWS::S3Files::AccessPoint
+    Properties:
+      FileSystemId: !Ref S3FileSystem
+      ClientToken: !Sub "${AWS::StackName}-ap-v2"
+      PosixUser:
+        Uid: 1001
+        Gid: 1001
+      RootDirectory:
+        Path: /lambda
+        CreationPermissions:
+          OwnerUid: "1001"
+          OwnerGid: "1001"
+          Permissions: "750"
+
+  # ---------- Worker Lambda (container image) ----------
+  # NOTE: ECR repo `${AWS::StackName}-worker` is bootstrapped in scripts/deploy.sh
+  # (chicken-and-egg: Lambda needs the image to exist at create time).
   WorkerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/ecs/${AWS::StackName}-worker"
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-worker"
       RetentionInDays: 30
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - S3FileSystemMountTarget1
+      - S3FileSystemMountTarget2
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-worker"
+      PackageType: Image
+      ImageUri: !If
+        - HasImageUri
+        - !Ref ImageUri
+        - !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AWS::StackName}-worker:latest"
+      Architectures:
+        - arm64
+      MemorySize: 10240
+      Timeout: 900
+      EphemeralStorage:
+        Size: 10240
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref WorkerSecurityGroup
+        SubnetIds: !Ref SubnetIds
+      FileSystemConfigs:
+        - Arn: !GetAtt S3FileSystemAccessPoint.AccessPointArn
+          LocalMountPath: /mnt/s3
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref AgentTable
+          BUCKET_NAME: !Ref ProjectsBucket
+          S3_MOUNT: /mnt/s3
+          WORKER_FUNCTION_NAME: !Sub "${AWS::StackName}-worker"
+          SCHEDULER_ROLE_ARN: !GetAtt SchedulerExecutionRole.Arn
+          STACK_NAME: !Ref AWS::StackName
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          ANTHROPIC_MODEL: us.anthropic.claude-opus-4-6-v1
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AgentTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource: !Sub "${AgentTable.Arn}/index/*"
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectVersion
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+              Resource:
+                - !GetAtt ProjectsBucket.Arn
+                - !Sub "${ProjectsBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParametersByPath
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-agent/projects/*"
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-worker"
+            - Effect: Allow
+              Action:
+                - scheduler:CreateSchedule
+                - scheduler:UpdateSchedule
+                - scheduler:DeleteSchedule
+                - scheduler:GetSchedule
+              Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${AWS::StackName}-wake-*"
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource: !GetAtt SchedulerExecutionRole.Arn
+            # Per AWS docs (configuration-filesystem-s3files), s3files:ClientMount/
+            # ClientWrite must be on Resource "*" — not the access-point ARN.
+            - Effect: Allow
+              Action:
+                - s3files:ClientMount
+                - s3files:ClientWrite
+              Resource: "*"
 
   # ---------- Scheduler IAM ----------
   SchedulerExecutionRole:
@@ -256,7 +280,7 @@ Resources:
               Service: scheduler.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: InvokeApiFunction
+        - PolicyName: InvokeFunctions
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -266,14 +290,16 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-api"
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-api:*"
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-worker"
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-worker:*"
 
-  # ---------- Lambda ----------
+  # ---------- API Lambda (Function URL, no VPC) ----------
   ApiFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-api"
       Handler: handler.handler
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Architectures:
         - arm64
       CodeUri: src/lambda/
@@ -283,15 +309,12 @@ Resources:
         Variables:
           TABLE_NAME: !Ref AgentTable
           BUCKET_NAME: !Ref ProjectsBucket
-          CLUSTER_ARN: !GetAtt ECSCluster.Arn
-          TASK_DEF_ARN: !Ref TaskDefinition
-          SUBNET_IDS: !Sub "${PublicSubnet1},${PublicSubnet2}"
-          SG_ID: !GetAtt TaskSecurityGroup.GroupId
+          WORKER_FUNCTION_NAME: !Sub "${AWS::StackName}-worker"
           APP_PASSWORD: !Ref AppPassword
           STACK_NAME: !Ref AWS::StackName
-          LOG_GROUP_NAME: !Ref WorkerLogGroup
           SCHEDULER_ROLE_ARN: !GetAtt SchedulerExecutionRole.Arn
           FUNCTION_ARN: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-api"
+          EXT_CHROME_ID: !Ref ExtChromeId
       FunctionUrlConfig:
         AuthType: NONE
       Policies:
@@ -306,6 +329,8 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
                 - s3:ListBucket
               Resource:
                 - !GetAtt ProjectsBucket.Arn
@@ -313,19 +338,8 @@ Resources:
         - Statement:
             - Effect: Allow
               Action:
-                - logs:GetLogEvents
-              Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AWS::StackName}-worker:*"
-        - Statement:
-            - Effect: Allow
-              Action:
-                - ecs:RunTask
-              Resource: !Ref TaskDefinition
-            - Effect: Allow
-              Action:
-                - iam:PassRole
-              Resource:
-                - !GetAtt TaskExecutionRole.Arn
-                - !GetAtt TaskRole.Arn
+                - lambda:InvokeFunction
+              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-worker"
         - Statement:
             - Effect: Allow
               Action:
@@ -369,13 +383,10 @@ Outputs:
     Value: !Ref ProjectsBucket
   ECRRepoUri:
     Description: ECR repository URI
-    Value: !GetAtt ECRRepo.RepositoryUri
-  ClusterArn:
-    Description: ECS cluster ARN
-    Value: !GetAtt ECSCluster.Arn
-  TaskDefArn:
-    Description: ECS task definition ARN
-    Value: !Ref TaskDefinition
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AWS::StackName}-worker"
+  WorkerFunctionName:
+    Description: Worker Lambda function name
+    Value: !Sub "${AWS::StackName}-worker"
   SchedulerRoleArn:
-    Description: IAM role used by EventBridge Scheduler to invoke the API function
+    Description: IAM role used by EventBridge Scheduler to invoke Lambda functions
     Value: !GetAtt SchedulerExecutionRole.Arn

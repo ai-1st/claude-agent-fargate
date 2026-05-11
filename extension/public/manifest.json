@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "ClaudeClaw",
+  "version": "1.0.0",
+  "description": "ClaudeClaw browser bridge: open a session in your browser to drive it from the agent.",
+  "//key_note": "Generate a stable extension ID by adding a base64 RSA public key under \"key\". The ID derived from that key must be set as EXT_CHROME_ID on the API Lambda so the 'Open in Extension' redirect points at the right extension.",
+  "permissions": ["sidePanel", "storage", "tabs", "scripting", "activeTab", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "action": {
+    "default_title": "ClaudeClaw",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["overlay.js", "executor.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["open.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

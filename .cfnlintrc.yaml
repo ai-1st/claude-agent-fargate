@@ -1,0 +1,10 @@
+templates:
+  - template.yaml
+ignore_checks:
+  # S3 Files resource types (AWS::S3Files::*) are newer than cfn-lint's
+  # bundled spec in many environments; ignore the "resource type does not
+  # exist" family until cfn-lint syncs.
+  - E3001
+  - E3008
+  - W2001
+  - I3042

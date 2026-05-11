@@ -10,7 +10,7 @@ const { values } = parseArgs({
     "skill-dir": { type: "string" },
     "project-dir": { type: "string" },
     profile: { type: "string", default: "co" },
-    stack: { type: "string", default: "claude-agent-fargate" },
+    stack: { type: "string", default: "claude-agent-serverless" },
     region: { type: "string", default: "us-east-1" },
   },
 });

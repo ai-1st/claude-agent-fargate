@@ -1,18 +1,49 @@
 # syntax=docker/dockerfile:1.7
-FROM node:20-slim
+FROM public.ecr.aws/lambda/nodejs:22
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends git curl \
- && rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
 
-WORKDIR /app
+# Tools the agent shells out to. Lambda nodejs:22 is AL2023-based; uses dnf.
+RUN dnf install -y \
+      git tar gzip unzip jq python3 python3-pip shadow-utils \
+      ca-certificates which findutils curl-minimal \
+ && dnf clean all \
+ && ln -sf /var/lang/bin/python3 /usr/local/bin/python || true
 
+# GitHub CLI (gh) — pre-built tarball, multi-arch
+RUN set -eux; \
+    case "${TARGETARCH:-$(uname -m)}" in \
+      amd64|x86_64) GH_ARCH=amd64 ;; \
+      arm64|aarch64) GH_ARCH=arm64 ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    GH_VER=2.62.0; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tgz; \
+    tar xzf /tmp/gh.tgz -C /tmp; \
+    cp /tmp/gh_${GH_VER}_linux_${GH_ARCH}/bin/gh /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tgz /tmp/gh_${GH_VER}_linux_${GH_ARCH}; \
+    gh --version | head -1
+
+# AWS CLI v2 — multi-arch
+RUN set -eux; \
+    case "${TARGETARCH:-$(uname -m)}" in \
+      amd64|x86_64) AWS_ARCH=x86_64 ;; \
+      arm64|aarch64) AWS_ARCH=aarch64 ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip; \
+    unzip -q /tmp/awscliv2.zip -d /tmp; \
+    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli; \
+    rm -rf /tmp/aws /tmp/awscliv2.zip; \
+    aws --version
+
+# Build the worker
+WORKDIR /build
 COPY src/worker/package.json src/worker/package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
-COPY src/worker/index.ts ./src/worker/index.ts
+COPY src/worker/ ./src/worker/
 COPY src/shared/ ./src/shared/
 
 RUN npx tsc \
@@ -25,4 +56,10 @@ RUN npx tsc \
   --rootDir src \
   src/worker/index.ts
 
-CMD ["node", "dist/worker/index.js"]
+# Lay the compiled code + deps + (ESM) package.json under LAMBDA_TASK_ROOT.
+RUN cp -r /build/dist/. ${LAMBDA_TASK_ROOT}/ \
+ && cp -r /build/node_modules ${LAMBDA_TASK_ROOT}/node_modules \
+ && cp /build/package.json ${LAMBDA_TASK_ROOT}/package.json
+
+# Lambda RIC: <relative-path-from-task-root>.<exported-fn>
+CMD ["worker/index.handler"]

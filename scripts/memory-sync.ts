@@ -9,7 +9,7 @@ const { values } = parseArgs({
     dir: { type: "string" },
     direction: { type: "string", default: "pull" }, // pull | push
     profile: { type: "string", default: "co" },
-    stack: { type: "string", default: "claude-agent-fargate" },
+    stack: { type: "string", default: "claude-agent-serverless" },
     region: { type: "string", default: "us-east-1" },
   },
 });
@@ -36,7 +36,8 @@ if (!bucket) {
   process.exit(1);
 }
 
-const s3Prefix = `s3://${bucket}/memory/${persona}/`;
+const BUCKET_PREFIX = "lambda/";
+const s3Prefix = `s3://${bucket}/${BUCKET_PREFIX}memory/${persona}/`;
 mkdirSync(dir, { recursive: true });
 
 if (direction === "pull") {
