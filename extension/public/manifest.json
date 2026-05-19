@@ -1,9 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ClaudeClaw",
+  "name": "CloudClaw",
   "version": "1.0.0",
-  "description": "ClaudeClaw browser bridge: open a session in your browser to drive it from the agent.",
-  "//key_note": "Generate a stable extension ID by adding a base64 RSA public key under \"key\". The ID derived from that key must be set as EXT_CHROME_ID on the API Lambda so the 'Open in Extension' redirect points at the right extension.",
+  "description": "CloudClaw browser bridge: open a session in your browser to drive it from the agent.",
   "permissions": ["sidePanel", "storage", "tabs", "scripting", "activeTab", "alarms"],
   "host_permissions": ["<all_urls>"],
   "icons": {
@@ -13,7 +12,7 @@
     "128": "icon-128.png"
   },
   "action": {
-    "default_title": "ClaudeClaw",
+    "default_title": "CloudClaw",
     "default_icon": {
       "16": "icon-16.png",
       "32": "icon-32.png",

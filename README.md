@@ -1,4 +1,4 @@
-# ClaudeClaw
+# CloudClaw
 
 OpenClaw-style personal AI agent platform on AWS. Each user message launches its own worker Lambda invocation. Personas, persistent memory, scheduled heartbeats, MCP, and Skills layered on top.
 
@@ -99,7 +99,7 @@ make deploy   # ensures ECR repo, builds worker image (linux/arm64), pushes :lat
 
 Override the AWS profile via `AWS_PROFILE=...` (default `co`). Pass the Chrome extension's stable ID as the `ExtChromeId` CloudFormation parameter so the "Open in Extension" redirect points at the right extension. (Drop a `"key"` field into `extension/public/manifest.json` to get a stable ID across users.)
 
-Existing data from earlier ClaudeClaw versions (with `Persona.kind`, `Session.kind`, `ExtToken#` rows, `gsi2` indexes, etc.) is not migrated — nuke and redeploy the DynamoDB table when upgrading.
+Existing data from earlier CloudClaw versions (with `Persona.kind`, `Session.kind`, `ExtToken#` rows, `gsi2` indexes, etc.) is not migrated — nuke and redeploy the DynamoDB table when upgrading.
 
 ## Persona upload
 

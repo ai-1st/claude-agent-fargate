@@ -1,5 +1,5 @@
 {
-  "name": "claudeclaw-extension",
+  "name": "cloudclaw-extension",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -8,8 +8,11 @@
     "watch": "node build.mjs --watch"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@types/chrome": "^0.0.281",
     "esbuild": "^0.24",
-    "typescript": "^5"
+    "svelte": "^5.28.2",
+    "typescript": "^5",
+    "vite": "^6.2.0"
   }
 }

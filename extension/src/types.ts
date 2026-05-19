@@ -10,12 +10,30 @@ export type BrowserOp =
 
 export type OverlayState = "idle" | "working" | "needs_human" | "unbound";
 
+export interface SessionSummary {
+  id: string;
+  name?: string;
+  persona: string;
+  status: string;
+  createdAt: string;
+  firstMessageAuthor?: string;
+}
+
 export interface ChatMessage {
   sk: string;
   kind: "user" | "assistant" | "heartbeat";
   prompt: string;
+  result?: string;
   status: string;
+  error?: string;
   createdAt: string;
+}
+
+export interface SessionDetailResponse {
+  session: SessionSummary & { inputUrl?: string; submitResult?: string };
+  messages: ChatMessage[];
+  canSend: boolean;
+  browserBound: boolean;
 }
 
 export interface PollResponse {
@@ -27,8 +45,6 @@ export interface PollResponse {
   status?: string;
   error?: string;
 }
-
-// --- Extension messages (background <-> content <-> sidepanel <-> open) ---
 
 export type RuntimeMessage =
   | { type: "open_session"; sid: string; token: string; base: string; inputUrl?: string }

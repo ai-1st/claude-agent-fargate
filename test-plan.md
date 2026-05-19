@@ -1,4 +1,4 @@
-# ClaudeClaw — Test Plan
+# CloudClaw — Test Plan
 
 ## Cross-persona orchestration — scheduled devops triage
 
@@ -16,7 +16,7 @@ npx tsx scripts/upload-project.ts --name devops --dir ./projects/devops \
 npx tsx scripts/upload-project.ts --name browser-operator --dir ./projects/browser-operator --profile co
 npx tsx scripts/upload-project.ts --name approver         --dir ./projects/approver         --profile co
 ```
-The ClaudeClaw Chrome extension is installed; no token/binding pre-config is needed. The human is logged into AWS Console (SSO) and Jira in their browser.
+The CloudClaw Chrome extension is installed; no token/binding pre-config is needed. The human is logged into AWS Console (SSO) and Jira in their browser.
 
 ### Steps
 1. **Heartbeat fires.** EventBridge Scheduler invokes Lambda with synthetic `POST /heartbeat` + `X-Heartbeat-Secret`. Lambda creates a `devops` session: `name="Heartbeat ..."`, `firstMessageAuthor="user"`, `resultSchema={"type":"object"}`, prompt = `routine: check prod RDS CPU; if anomalous, get human approval and file a Jira ticket`. Worker Lambda invoked.

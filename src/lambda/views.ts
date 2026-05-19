@@ -1,13 +1,13 @@
 import type { Session, Message, Persona, MemoryFile, Schedule, Template } from "../shared/types.js";
 import { sessionId } from "../shared/types.js";
 
-export function renderPage(title: string, body: string): string {
+function renderPage(title: string, body: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(title)} — ClaudeClaw</title>
+  <title>${esc(title)} — CloudClaw</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,${encodeURIComponent(faviconSvg())}">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -20,7 +20,7 @@ export function renderPage(title: string, body: string): string {
     <nav class="mb-6 flex items-center gap-5 pb-3 border-b border-gray-200">
       <a href="/" class="flex items-center gap-2 text-lg font-bold text-gray-900 hover:text-blue-600">
         ${clawLogo()}
-        <span>ClaudeClaw</span>
+        <span>CloudClaw</span>
       </a>
       <a href="/personas" class="text-sm text-gray-700 hover:text-blue-600">Personas</a>
       <a href="/" class="text-sm text-gray-700 hover:text-blue-600">Sessions</a>
@@ -55,7 +55,7 @@ export function renderLogin(error?: string): string {
     <div class="max-w-md mx-auto mt-12">
       <div class="flex flex-col items-center mb-6">
         ${heroLogo()}
-        <h2 class="text-2xl font-semibold mt-3">ClaudeClaw</h2>
+        <h2 class="text-2xl font-semibold mt-3">CloudClaw</h2>
         <p class="text-gray-500 text-sm">Personal AI agent platform</p>
       </div>
       ${error ? `<p class="text-red-700 mb-2 text-sm">${esc(error)}</p>` : ""}
@@ -117,7 +117,9 @@ export function renderHome(sessions: Session[], personas: Persona[]): string {
   const personaOptions = personas
     .map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`)
     .join("");
-  return renderPage("Home", `
+  return renderPage(
+    "Home",
+    `
     <h2 class="text-2xl font-semibold mb-4">New Session</h2>
     <form method="POST" action="/sessions" class="space-y-3 mb-8 bg-white border border-gray-200 rounded p-4">
       <label class="block">
@@ -191,8 +193,7 @@ export function renderSessionTable(sessions: Session[]): string {
 
 export function renderSessionDetail(
   session: Session,
-  messages: Message[]
-): string {
+  messages: Message[]): string {
   const id = sessionId(session.pk);
   const personaName = session.persona ?? "(unknown)";
   const created = (session.createdAt ?? "").replace("T", " ").slice(0, 19);
@@ -223,7 +224,9 @@ export function renderSessionDetail(
           <button class="px-3 py-1.5 bg-purple-600 text-white rounded text-sm hover:bg-purple-700">Open in Extension</button>
         </form>`
       : "";
-  return renderPage(`Session ${id.slice(0, 8)}`, `
+  return renderPage(
+    `Session ${id.slice(0, 8)}`,
+    `
     <h2 class="text-2xl font-semibold mb-2">${esc(session.name ?? `Session ${id.slice(0, 8)}`)} <span id="status-badge">${statusBadge(session.status)}</span></h2>
     <p class="mb-3 text-sm text-gray-600">${esc(id.slice(0, 8))} · Persona: <a href="/personas/${esc(personaName)}" class="text-blue-600 hover:underline font-semibold">${esc(personaName)}</a> · ${esc(created)}${session.callerPersona ? ` · asked by <code>${esc(session.callerPersona)}</code>` : ""} · firstAuthor=${esc(session.firstMessageAuthor)}</p>
     ${inputUrlLine}
@@ -239,7 +242,8 @@ export function renderSessionDetail(
     </div>
     ${composerForm(session, personaName, hasRunning, false)}
     <p class="mt-6"><a href="/" class="text-blue-600 hover:underline">← Back</a></p>
-  `);
+  `
+  );
 }
 
 export function composerForm(
@@ -379,10 +383,12 @@ export function renderPersonaList(personas: Persona[]): string {
         <tbody>${rows}</tbody>
       </table>
     </div>
-  `);
+  `
+  );
 }
 
-export function renderPersonaCreateForm(opts: { templates?: Template[]; error?: string } = {}): string {
+export function renderPersonaCreateForm(
+  opts: { templates?: Template[]; error?: string } = {}): string {
   const { templates = [], error } = opts;
   const templateOptions = [
     `<option value="">— pick a template —</option>`,
@@ -431,11 +437,14 @@ export function renderPersonaCreateForm(opts: { templates?: Template[]; error?: 
         });
       })();
     </script>
-  `);
+  `
+  );
 }
 
-export function renderPersonaForm(p?: Persona): string {
-  return renderPage("Edit Persona", `
+export function renderPersonaForm(p: Persona | undefined): string {
+  return renderPage(
+    "Edit Persona",
+    `
     <h2 class="text-2xl font-semibold mb-4">${p ? `Edit ${esc(p.name)}` : "Configure Persona"}</h2>
     <form method="POST" action="/personas" class="space-y-3 max-w-2xl">
       <input type="hidden" name="mode" value="update">
@@ -469,7 +478,8 @@ export function renderPersonaForm(p?: Persona): string {
       </label>
       <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
     </form>
-  `);
+  `
+  );
 }
 
 export function renderPersonaDetail(
@@ -478,8 +488,7 @@ export function renderPersonaDetail(
   schedules: Schedule[],
   skills: Array<{ name: string; description: string }>,
   sessions: Session[] = [],
-  templates: Template[] = []
-): string {
+  templates: Template[] = []): string {
   const memList = memory.length
     ? memory.map((m) => `<li><a href="/personas/${esc(p.name)}/memory/${esc(m.path)}" class="text-blue-600 hover:underline font-mono text-sm">${esc(m.path)}</a> <span class="text-gray-500 text-xs">(${m.size} bytes)</span></li>`).join("")
     : `<li class="text-gray-500">No memory files yet.</li>`;
@@ -619,29 +628,41 @@ export function renderPersonaDetail(
         <button type="submit" class="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm">Add</button>
       </form>
     </section>
-  `);
+  `
+  );
 }
 
-export function renderMemoryFile(persona: string, path: string, content: string): string {
-  return renderPage(`${persona}/${path}`, `
+export function renderMemoryFile(
+  persona: string,
+  path: string,
+  content: string): string {
+  return renderPage(
+    `${persona}/${path}`,
+    `
     <p class="mb-2 text-sm"><a href="/personas/${esc(persona)}" class="text-blue-600 hover:underline">← ${esc(persona)}</a></p>
     <h2 class="text-xl font-semibold mb-3 font-mono">${esc(path)}</h2>
     <pre class="bg-white border border-gray-200 rounded p-4 whitespace-pre-wrap font-mono text-sm">${esc(content)}</pre>
-  `);
+  `
+  );
 }
 
 // --- Inbox ---
 
-export function renderInboxList(pending: Session[], personas: Map<string, Persona>): string {
+export function renderInboxList(
+  pending: Session[],
+  personas: Map<string, Persona>): string {
   if (!pending.length) {
-    return renderPage("Inbox", `
+    return renderPage(
+      "Inbox",
+      `
       <h2 class="text-2xl font-semibold mb-4">Inbox</h2>
       <div class="bg-white border border-gray-200 rounded-lg p-10 text-center">
         ${emptyInboxSvg()}
         <p class="mt-4 text-gray-700 font-medium">All caught up.</p>
         <p class="text-sm text-gray-500">Sessions waiting on a human reply appear here.</p>
       </div>
-    `);
+    `
+    );
   }
   const rows = pending.map((s) => {
     const id = sessionId(s.pk);
@@ -657,10 +678,13 @@ export function renderInboxList(pending: Session[], personas: Map<string, Person
       <div class="font-mono text-[11px] text-gray-400">${esc(id.slice(0, 8))}</div>
     </a>`;
   }).join("");
-  return renderPage("Inbox", `
+  return renderPage(
+    "Inbox",
+    `
     <h2 class="text-2xl font-semibold mb-4">Inbox <span class="text-sm text-gray-500">(${pending.length})</span></h2>
     ${rows}
-  `);
+  `
+  );
 }
 
 function safePrettyJson(s: string): string {

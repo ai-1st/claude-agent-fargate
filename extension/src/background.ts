@@ -1,5 +1,5 @@
 import type { RuntimeMessage, BrowserOp, OverlayState } from "./types.js";
-import { readState, writeState, clearState } from "./state.js";
+import { readState, writeState, clearBrowserBinding } from "./state.js";
 import { poll, postResult } from "./api.js";
 
 const POLL_ALARM = "claw-poll";
@@ -21,7 +21,9 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
   (async () => {
     try {
       if (msg.type === "open_session") {
+        const cur = await readState();
         await writeState({
+          ...cur,
           sid: msg.sid,
           token: msg.token,
           base: msg.base,
@@ -37,7 +39,7 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         void tick();
         sendResponse({ ok: true });
       } else if (msg.type === "unbind") {
-        await clearState();
+        await clearBrowserBinding();
         await broadcastState("unbound");
         sendResponse({ ok: true });
       } else if (msg.type === "poll_now") {
@@ -93,7 +95,7 @@ async function tick(): Promise<void> {
 
     if (r.terminal) {
       await broadcastState("idle");
-      await clearState();
+      await clearBrowserBinding();
       return;
     }
 

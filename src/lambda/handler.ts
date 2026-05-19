@@ -53,6 +53,7 @@ import {
   renderMessageListWithOob,
 } from "./views.js";
 import type { FirstMessageAuthor } from "../shared/types.js";
+import { sessionId } from "../shared/types.js";
 
 const scheduler = new SchedulerClient({});
 const s3 = new S3Client({});
@@ -110,7 +111,7 @@ export async function handler(
     }
 
     if (method === "GET" && path === "/") {
-      const [sessions, personas] = await Promise.all([listSessions(), scanPersonas()]);
+      const [sessions, personas] = await Promise.all([listSessions(40), scanPersonas()]);
       return html(renderHome(sessions, personas));
     }
 
@@ -143,7 +144,8 @@ export async function handler(
         return html(
           renderPersonaCreateForm({
             templates,
-            error: "Invalid name: letters, digits, hyphens, underscores; max 41 chars; must start with alphanumeric.",
+            error:
+              "Invalid name: letters, digits, hyphens, underscores; max 41 chars; must start with alphanumeric.",
           }),
           400
         );
@@ -392,7 +394,85 @@ export async function handler(
       return redirect(url);
     }
 
-    // --- Extension short-poll endpoints (session-scoped) ---
+    // --- Extension API (app password; used by side panel session list) ---
+    if (method === "GET" && path === "/ext/sessions") {
+      if (!extAppAuthed(event)) return json({ error: "unauthorized" }, 401);
+      const sessions = await listSessions(50);
+      return json(
+        sessions.map((s) => ({
+          id: sessionId(s.pk),
+          name: s.name,
+          persona: s.persona,
+          status: s.status,
+          createdAt: s.createdAt,
+          firstMessageAuthor: s.firstMessageAuthor,
+        }))
+      );
+    }
+
+    const extSessionMatch = path.match(/^\/ext\/sessions\/([^/]+)$/);
+    if (method === "GET" && extSessionMatch) {
+      if (!extAppAuthed(event)) return json({ error: "unauthorized" }, 401);
+      const id = extSessionMatch[1];
+      const [session, messages] = await Promise.all([getSession(id), getMessages(id)]);
+      if (!session) return json({ error: "session not found" }, 404);
+      const hasRunning = messages.some((m) => m.status === "RUNNING");
+      const terminal = session.status === "COMPLETED" || session.status === "FAILED";
+      return json({
+        session: {
+          id,
+          name: session.name,
+          persona: session.persona,
+          status: session.status,
+          createdAt: session.createdAt,
+          inputUrl: session.inputUrl,
+          submitResult: session.submitResult,
+        },
+        messages: messages.map((m) => ({
+          sk: m.sk,
+          kind: m.kind ?? "user",
+          prompt: m.prompt,
+          result: m.result,
+          status: m.status,
+          error: m.error,
+          createdAt: m.createdAt,
+        })),
+        canSend: !hasRunning && !terminal,
+        browserBound: !!session.extToken,
+      });
+    }
+
+    const extSessionMsgMatch = path.match(/^\/ext\/sessions\/([^/]+)\/messages$/);
+    if (method === "POST" && extSessionMsgMatch) {
+      if (!extAppAuthed(event)) return json({ error: "unauthorized" }, 401);
+      const id = extSessionMsgMatch[1];
+      const session = await getSession(id);
+      if (!session) return json({ error: "session not found" }, 404);
+      const body = parseBody(event);
+      const prompt = String(body.prompt ?? "").trim();
+      if (!prompt) return json({ error: "missing prompt" }, 400);
+      const sortKey = await nextMessageSortKey(id);
+      await createMessage(id, sortKey, prompt);
+      await updateSessionStatus(id, "RUNNING");
+      const invokeId = await launchTask(id, sortKey);
+      if (invokeId) await setMessageInvokeId(id, sortKey, invokeId);
+      return json({ ok: true, sortKey, invokeId });
+    }
+
+    const extSessionBindMatch = path.match(/^\/ext\/sessions\/([^/]+)\/bind$/);
+    if (method === "POST" && extSessionBindMatch) {
+      if (!extAppAuthed(event)) return json({ error: "unauthorized" }, 401);
+      const id = extSessionBindMatch[1];
+      const session = await getSession(id);
+      if (!session) return json({ error: "session not found" }, 404);
+      if (session.status === "COMPLETED" || session.status === "FAILED")
+        return json({ error: `cannot bind to ${session.status} session` }, 409);
+      const token = randomBytes(24).toString("hex");
+      await setSessionExtToken(id, token);
+      return json({ sid: id, token, base: lambdaBaseUrl(event), inputUrl: session.inputUrl });
+    }
+
+    // --- Extension short-poll endpoints (session-scoped ext token) ---
     if (method === "GET" && path === "/ext/poll") {
       const qs = event.queryStringParameters ?? {};
       const sid = qs.sid ?? "";
@@ -424,7 +504,9 @@ export async function handler(
         sk: m.sk,
         kind: m.kind ?? "user",
         prompt: m.prompt,
+        result: m.result,
         status: m.status,
+        error: m.error,
         createdAt: m.createdAt,
       }));
       return json({
@@ -723,6 +805,12 @@ function parseBody(event: APIGatewayProxyEventV2): Record<string, any> {
   const result: Record<string, string> = {};
   for (const [k, v] of params) result[k] = v;
   return result;
+}
+
+function extAppAuthed(event: APIGatewayProxyEventV2): boolean {
+  if (!APP_PASSWORD) return false;
+  const h = event.headers?.["x-app-password"] ?? event.headers?.["X-App-Password"];
+  return h === APP_PASSWORD;
 }
 
 function html(body: string, statusCode = 200): APIGatewayProxyResultV2 {

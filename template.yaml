@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: ClaudeClaw — serverless agent platform; per-message Lambda worker, S3 Files mount, EventBridge sleep/wake
+Description: CloudClaw — serverless agent platform; per-message Lambda worker, S3 Files mount, EventBridge sleep/wake
 
 Parameters:
   AppPassword:
@@ -82,7 +82,7 @@ Resources:
   WorkerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ClaudeClaw worker Lambda
+      GroupDescription: CloudClaw worker Lambda
       VpcId: !Ref VpcId
       SecurityGroupEgress:
         - IpProtocol: "-1"
